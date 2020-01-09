@@ -33,28 +33,44 @@ namespace IngameScript
         private List<IMyCockpit> displayCockpits;
 
         private IMyAirVent airlockVent;
-        private List<IMyAirtightHangarDoor> exteriorDoors, interiorDoors;
+        private List<IMyAirtightHangarDoor> exteriorDoors, interiorDoors, allDoors;
 
         private readonly MyIniKey
             airVentTagKey = new MyIniKey(AirlockSection, "AirVentTag"),
             exteriorAirlockTagKey = new MyIniKey(AirlockSection, "ExteriorDoorsTag"),
             interiorAirlockTagKey = new MyIniKey(AirlockSection, "InteriorDoorsTag");
 
+        private IEnumerator coroutine;
+        private int currentSensorDetections = 0;
+
         public Program()
         {
             this.commandByArgument = new Dictionary<string, Action>()
             {
                 { "reset", this.Reset },
-                { "toggle_interior", this.ToggleInteriorDoor }
+                { "interior_enter", () => this.OnInteriorSensorEnter() },
+                { "interior_exit", () => this.OnInteriorSensorExit() },
+                { "airlock_enter", () => this.StartCoroutine(this.OnAirlockSensorEnter()) },
+                { "airlock_exit", () => this.OnAirlockSensorExit() },
+                { "exterior_enter", () => this.OnExteriorSensorEnter() },
+                { "exterior_exit", () => this.OnExteriorSensorExit() }
             };
             
             this.displayCockpits = new List<IMyCockpit>();
             this.exteriorDoors = new List<IMyAirtightHangarDoor>();
             this.interiorDoors = new List<IMyAirtightHangarDoor>();
+            this.allDoors = new List<IMyAirtightHangarDoor>();
 
             this.Reset();
         }
-        
+
+        private void StartCoroutine(IEnumerator coroutine)
+        {
+            this.Echo($"Starting {coroutine.ToString()}");
+            this.coroutine = coroutine;
+            this.Runtime.UpdateFrequency |= UpdateFrequency.Once;
+        }
+
         public void Save()
         {
         }
@@ -62,6 +78,29 @@ namespace IngameScript
         public void Main(string argument, UpdateType updateSource)
         {
             this.RunCommand(argument);
+
+            if ((updateSource & UpdateType.Once) == UpdateType.Once)
+            {
+                this.RunCoroutine();
+            }
+        }
+        
+        public void RunCoroutine()
+        {
+            if (this.coroutine != null)
+            {
+                bool hasMoreSteps = this.coroutine.MoveNext();
+                
+                if (hasMoreSteps)
+                {
+                    this.Runtime.UpdateFrequency |= UpdateFrequency.Once;
+                }
+                else
+                {
+                    (this.coroutine as IDisposable)?.Dispose();
+                    this.coroutine = null;
+                }
+            }
         }
 
         private void RunCommand(string argument)
@@ -133,6 +172,9 @@ namespace IngameScript
             else
                 throw new Exception($"A single interior airlock hangar is required. Its name must contain {interiorAirlockTag}");
 
+            this.allDoors.AddRange(this.exteriorDoors);
+            this.allDoors.AddRange(this.interiorDoors);
+
             // Air vents
             var airVents = new List<IMyAirVent>();
             this.GridTerminalSystem.GetBlocksOfType(
@@ -154,19 +196,123 @@ namespace IngameScript
             block.IsSameConstructAs(this.Me)
             && this.ini.TryParse(block.CustomData, requiredSection)
             && this.ini.ContainsSection(InfoSection);
-
-        private void ToggleInteriorDoor()
+        
+        private IEnumerator ToggleDoorTwice()
         {
-            if (this.interiorDoors.Count == 0)
-            {
-                this.Echo("Interior doors not found, resetting...");
-                this.Reset();
-            }
+            var doorToCheck = this.interiorDoors[0];
+            float prevOpenRatio = doorToCheck.OpenRatio;
+            yield return null;
+            float currOpenRatio = doorToCheck.OpenRatio;
+            float openRatioDelta = currOpenRatio - prevOpenRatio;
 
+            bool doorIsMoving = openRatioDelta != 0f;
+            
             foreach (var door in this.interiorDoors)
                 door.ToggleDoor();
 
+            bool isDoorOpening = openRatioDelta < 0f || currOpenRatio == 0f;
             
+            yield return null;
+
+            while (doorToCheck.OpenRatio != (isDoorOpening ? 1f : 0f))
+                yield return null;
+
+            foreach (var door in this.interiorDoors)
+                door.ToggleDoor();
+        }
+
+        private void OnInteriorSensorEnter()
+        {
+            if (this.currentSensorDetections++ > 0)
+                return;
+
+            this.StartCoroutine(this.OpenInteriorDoors());
+        }
+
+        private IEnumerator OpenInteriorDoors()
+        {
+            this.airlockVent.Depressurize = false;
+            while (this.airlockVent.GetOxygenLevel() < 1f)
+                yield return null;
+
+            foreach (var door in this.interiorDoors)
+                door.OpenDoor();
+        }
+
+        private void OnInteriorSensorExit()
+        {
+            this.currentSensorDetections--;
+
+            foreach (var door in this.interiorDoors)
+                door.CloseDoor();
+        }
+
+        private IEnumerator OnAirlockSensorEnter()
+        {
+            this.currentSensorDetections++;
+
+            bool allDoorsClosed = false;
+            while (!allDoorsClosed)
+            {
+                yield return null;
+                allDoorsClosed = true;
+                foreach (var door in this.allDoors)
+                    if (door.OpenRatio > 0f)
+                    {
+                        allDoorsClosed = false;
+                        break;
+                    }
+            }
+            
+            if (this.airlockVent.GetOxygenLevel() > 0.5f)
+            {
+                this.airlockVent.Depressurize = true;
+                while (this.airlockVent.GetOxygenLevel() > 0f)
+                    yield return null;
+
+                foreach (var door in this.exteriorDoors)
+                    door.OpenDoor();
+            }
+            else
+            {
+                this.airlockVent.Depressurize = false;
+                while (this.airlockVent.GetOxygenLevel() < 1f)
+                    yield return null;
+
+                foreach (var door in this.interiorDoors)
+                    door.OpenDoor();
+            }
+        }
+
+        private void OnAirlockSensorExit()
+        {
+            this.currentSensorDetections--;
+        }
+
+        private void OnExteriorSensorEnter()
+        {
+            if (this.currentSensorDetections++ > 0)
+                return;
+
+            this.StartCoroutine(this.OpenExteriorDoors());
+        }
+
+        private IEnumerator OpenExteriorDoors()
+        {
+            this.airlockVent.Depressurize = true;
+            while (this.airlockVent.GetOxygenLevel() > 0f)
+                yield return null;
+
+            foreach (var door in this.exteriorDoors)
+                door.OpenDoor();
+        }
+
+        private void OnExteriorSensorExit()
+        {
+            this.currentSensorDetections--;
+
+            foreach (var door in this.exteriorDoors)
+                door.CloseDoor();
         }
     }
 }
