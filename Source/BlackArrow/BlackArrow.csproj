@@ -4,7 +4,7 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{40E0CE4A-DB6D-4BC9-81C5-D4877D37194A}</ProjectGuid>
+    <ProjectGuid>{1A86F0CA-EADD-48F9-A86B-314C3F30E4EC}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <RootNamespace>IngameScript</RootNamespace>
     <AssemblyName>BlackArrow</AssemblyName>
